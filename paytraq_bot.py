@@ -17,9 +17,7 @@ BOT_TOKEN = "8649650117:AAHLbzcGjPu-ei-S0tWMksEs-fvUs1wof-c"
 
 # Add Telegram user_ids of allowed users here.
 # To find your ID: message @userinfobot in Telegram.
-ALLOWED_USERS = {
-    # 123456789,   # Example: Ivan
-    # 987654321,   # Example: Maria
+ALLOWED_USERS = {563973148,  # Admin
 }
 
 # ─── REGION MAPPING ───────────────────────────────────────────────────────────
