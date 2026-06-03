@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 PayTraq CSV Report Bot
-Sends a CSV file → gets breakdown by region, currency, and account source.
 """
 
 import logging
@@ -11,36 +10,25 @@ from collections import defaultdict
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────
-
 BOT_TOKEN = "8649650117:AAHLbzcGjPu-ei-S0tWMksEs-fvUs1wof-c"
 
 ALLOWED_USERS = {
-    563973148,  # Admin
+    563973148,
 }
-
-# ─── REGION MAPPING ───────────────────────────────────────────────────────────
 
 def get_region(project: str) -> str:
     p = project.strip().upper()
-    # Armenia
     if p in ("AM - ARMENIA", "AM-ARMENIA", "ARMENIA", "AM"):
         return "🇦🇲 Armenia"
-    # Azerbaijan
     if p in ("AZ - AZERBAIJAN", "AZ-AZERBAIJAN", "AZERBAIJAN", "AZ"):
         return "🇦🇿 Azerbaijan"
-    # Uzbekistan
     if p in ("UZ-UZBEKISTAN", "UZ - UZBEKISTAN", "UZBEKISTAN", "UZ"):
         return "🇺🇿 Uzbekistan"
-    # Empty project — special bucket
     if p == "":
         return "__EMPTY__"
-    # Everything else → Europe / Other
     return "🌍 Europe / Other"
 
 REGION_ORDER = ["🇦🇲 Armenia", "🇦🇿 Azerbaijan", "🇺🇿 Uzbekistan", "🌍 Europe / Other"]
-
-# ─── CSV PARSING ──────────────────────────────────────────────────────────────
 
 def parse_csv(content: bytes) -> list:
     text = content.decode("utf-8-sig", errors="replace")
@@ -53,79 +41,95 @@ def parse_csv(content: bytes) -> list:
     return rows
 
 def parse_amount(value: str) -> float:
-    v = value.replace(" ", "").replace("\xa0", "").replace(",", ".")
+    # Handle formats: 1234.56 / 1,234.56 / 1 234,56 / -1234.56
+    v = value.replace(" ", "").replace("\xa0", "")
+    # If both comma and dot present, comma is thousands separator
+    if "," in v and "." in v:
+        v = v.replace(",", "")
+    elif "," in v:
+        # Could be decimal separator (European) or thousands
+        parts = v.split(",")
+        if len(parts) == 2 and len(parts[1]) <= 2:
+            v = v.replace(",", ".")
+        else:
+            v = v.replace(",", "")
     try:
-        return float(v)
+        return abs(float(v))  # always positive — incoming amounts
     except ValueError:
         return 0.0
 
-# ─── REPORT GENERATION ────────────────────────────────────────────────────────
-
 def build_report(rows: list) -> str:
-    # Structure: region → currency → account → total
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
-
-    # Empty project incoming: currency → account → total
     empty_in = defaultdict(lambda: defaultdict(float))
-    empty_in_count = 0
+    empty_in_rows = []  # store details for unrecognized incoming
 
-    # Outgoing stats
     out_count = 0
     out_by_currency = defaultdict(float)
 
-    total_in = 0
+    skip_draft = 0
+    skip_zero = 0
+    skip_no_docno = 0
+    unknown_projects = set()  # projects that went to Europe/Other
 
     for row in rows:
-        doc_no   = row.get("Document No.", "")
+        doc_no   = row.get("Document No.", "").strip()
         project  = row.get("Project", "").strip()
-        currency = row.get("Currency", "?").upper()
-        account  = row.get("Account", "?")
-        amount_s = row.get("Amount", "0")
-        status   = row.get("Status", "").lower()
+        currency = row.get("Currency", "?").upper().strip()
+        account  = row.get("Account", "?").strip()
+        amount_s = row.get("Amount", "0").strip()
+        status   = row.get("Status", "").strip()
+        date     = row.get("Date", "").strip()
+        partner  = row.get("Business partner", "").strip()
 
-        if status in ("cancelled", "void", "voided"):
+        # Skip drafts
+        if status.lower() == "draft":
+            skip_draft += 1
             continue
-
-        amount = parse_amount(amount_s)
 
         is_incoming = doc_no.upper().startswith("IN/")
         is_outgoing = doc_no.upper().startswith("OUT/")
 
-        # Outgoing — just count
         if is_outgoing:
+            amount = parse_amount(amount_s)
             out_count += 1
             out_by_currency[currency] += amount
             continue
 
         if not is_incoming:
+            skip_no_docno += 1
             continue
 
+        amount = parse_amount(amount_s)
         if amount == 0:
+            skip_zero += 1
             continue
-
-        total_in += 1
 
         region = get_region(project)
 
         if region == "__EMPTY__":
-            empty_in_count += 1
             empty_in[currency][account] += amount
+            empty_in_rows.append({
+                "date": date,
+                "doc": doc_no,
+                "partner": partner,
+                "amount": amount,
+                "currency": currency,
+                "account": account,
+            })
         else:
+            if region == "🌍 Europe / Other" and project:
+                unknown_projects.add(project)
             data[region][currency][account] += amount
-
-    if total_in == 0 and empty_in_count == 0:
-        return "⚠️ Не найдено входящих платежей. Проверь формат CSV."
 
     lines = ["📊 *Сводка по входящим оплатам PayTraq*\n"]
 
-    grand_total: dict = defaultdict(float)
+    grand_total = defaultdict(float)
 
     for region in REGION_ORDER:
         if region not in data:
             continue
         lines.append(f"*{region}*")
-        currencies = sorted(data[region].keys())
-        for currency in currencies:
+        for currency in sorted(data[region].keys()):
             accounts = data[region][currency]
             cur_total = sum(accounts.values())
             grand_total[currency] += cur_total
@@ -134,9 +138,9 @@ def build_report(rows: list) -> str:
                 lines.append(f"    • {account}: `{amt:,.2f}`")
         lines.append("")
 
-    # Empty project block
-    if empty_in_count > 0:
-        lines.append(f"*⚠️ Без проекта ({empty_in_count} платежей)*")
+    # Empty project — detailed
+    if empty_in_rows:
+        lines.append(f"*⚠️ Входящие без проекта ({len(empty_in_rows)} платежей)*")
         for currency in sorted(empty_in.keys()):
             accounts = empty_in[currency]
             cur_total = sum(accounts.values())
@@ -145,22 +149,35 @@ def build_report(rows: list) -> str:
             for account, amt in sorted(accounts.items(), key=lambda x: -x[1]):
                 lines.append(f"    • {account}: `{amt:,.2f}`")
         lines.append("")
+        lines.append("  _Детали:_")
+        for r in empty_in_rows[:20]:  # max 20 rows
+            lines.append(f"  `{r['date']}` {r['doc']} | {r['partner'] or '—'} | {r['amount']:,.2f} {r['currency']} | {r['account']}")
+        if len(empty_in_rows) > 20:
+            lines.append(f"  _...и ещё {len(empty_in_rows)-20} платежей_")
+        lines.append("")
 
-    # Grand total incoming
     lines.append("─────────────────")
     lines.append("*💰 Итого входящих:*")
     for currency, total in sorted(grand_total.items()):
         lines.append(f"  {currency}: `{total:,.2f}`")
 
-    # Outgoing summary
     if out_count > 0:
-        lines.append(f"\n*↗️ Исходящих платежей: {out_count}*")
+        lines.append(f"\n*↗️ Исходящих: {out_count}*")
         for currency, amt in sorted(out_by_currency.items()):
             lines.append(f"  {currency}: `{amt:,.2f}`")
 
-    return "\n".join(lines)
+    # Debug info
+    debug = []
+    if skip_draft:
+        debug.append(f"Draft пропущено: {skip_draft}")
+    if skip_zero:
+        debug.append(f"Нулевые суммы: {skip_zero}")
+    if skip_no_docno:
+        debug.append(f"Без номера документа: {skip_no_docno}")
+    if debug:
+        lines.append(f"\n_ℹ️ {' | '.join(debug)}_")
 
-# ─── BOT HANDLERS ─────────────────────────────────────────────────────────────
+    return "\n".join(lines)
 
 def is_allowed(user_id: int) -> bool:
     if not ALLOWED_USERS:
@@ -170,11 +187,9 @@ def is_allowed(user_id: int) -> bool:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
-    your_id = update.effective_user.id
     await update.message.reply_text(
-        f"👋 Привет! Я обрабатываю выгрузки PayTraq.\n\n"
-        f"Отправь мне CSV-файл с оплатами — получишь сводку по регионам, валютам и источникам.\n\n"
-        f"_Твой Telegram ID: `{your_id}`_",
+        f"👋 Привет! Отправь CSV-файл из PayTraq — получишь сводку по регионам, валютам и источникам.\n\n"
+        f"_Твой Telegram ID: `{update.effective_user.id}`_",
         parse_mode="Markdown"
     )
 
@@ -182,37 +197,29 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
     await update.message.reply_text(
-        "📎 Просто отправь CSV-файл из PayTraq.\n\n"
+        "📎 Отправь CSV-файл из PayTraq.\n\n"
         "Бот покажет разбивку:\n"
-        "• 🇦🇲 Armenia\n"
-        "• 🇦🇿 Azerbaijan\n"
-        "• 🇺🇿 Uzbekistan\n"
-        "• 🌍 Europe / Other\n"
-        "• ⚠️ Без проекта (пустые входящие)\n"
-        "• ↗️ Исходящие (только количество)\n\n"
-        "Внутри каждого блока — суммы по валютам и счетам.",
+        "• 🇦🇲 Armenia\n• 🇦🇿 Azerbaijan\n• 🇺🇿 Uzbekistan\n• 🌍 Europe / Other\n"
+        "• ⚠️ Входящие без проекта (с деталями)\n• ↗️ Исходящие (количество и суммы)\n\n"
+        "Статус Draft автоматически исключается.",
         parse_mode="Markdown"
     )
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    name = update.effective_user.full_name
-    await update.message.reply_text(
-        f"👤 {name}\nТвой Telegram ID: `{uid}`",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"👤 {update.effective_user.full_name}\nID: `{uid}`", parse_mode="Markdown")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
-        await update.message.reply_text("⛔ У тебя нет доступа к этому боту.")
+        await update.message.reply_text("⛔ У тебя нет доступа.")
         return
 
     doc = update.message.document
     if not doc.file_name.lower().endswith(".csv"):
-        await update.message.reply_text("⚠️ Пожалуйста, отправь файл в формате CSV.")
+        await update.message.reply_text("⚠️ Отправь файл в формате CSV.")
         return
 
-    await update.message.reply_text("⏳ Обрабатываю файл...")
+    await update.message.reply_text("⏳ Обрабатываю...")
 
     try:
         file = await context.bot.get_file(doc.file_id)
@@ -220,7 +227,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = parse_csv(bytes(content))
 
         if not rows:
-            await update.message.reply_text("❌ CSV пустой или не удалось его прочитать.")
+            await update.message.reply_text("❌ CSV пустой или не удалось прочитать.")
             return
 
         report = build_report(rows)
@@ -233,21 +240,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(chunk, parse_mode="Markdown")
 
     except Exception as e:
-        logging.exception("Error processing CSV")
-        await update.message.reply_text(f"❌ Ошибка при обработке файла:\n`{e}`", parse_mode="Markdown")
+        logging.exception("Error")
+        await update.message.reply_text(f"❌ Ошибка:\n`{e}`", parse_mode="Markdown")
 
 async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
-    await update.message.reply_text("📎 Отправь CSV-файл, и я сделаю сводку. Или /help для справки.")
-
-# ─── MAIN ─────────────────────────────────────────────────────────────────────
+    await update.message.reply_text("📎 Отправь CSV-файл. /help для справки.")
 
 def main():
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        level=logging.INFO
-    )
+    logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
