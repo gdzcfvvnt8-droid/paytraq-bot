@@ -28,6 +28,28 @@ def get_region(project: str) -> str:
         return "__EMPTY__"
     return "🌍 Europe / Other"
 
+def normalize_account(account: str) -> str:
+    """Normalize account names for consistent grouping."""
+    a = account.strip()
+    a_lower = a.lower()
+    if 'revolut' in a_lower:
+        if 'eur' in a_lower:
+            return 'Revolut EUR'
+        if 'usd' in a_lower:
+            return 'Revolut USD'
+        return 'Revolut'
+    if 'stripe' in a_lower:
+        if 'eur' in a_lower:
+            return 'Stripe EUR'
+        if 'usd' in a_lower:
+            return 'Stripe USD'
+        return 'Stripe'
+    if 'paysera' in a_lower:
+        return 'Paysera'
+    if 'coop' in a_lower:
+        return 'Coop Pank'
+    return a
+
 REGION_ORDER = ["🇦🇲 Armenia", "🇦🇿 Azerbaijan", "🇺🇿 Uzbekistan", "🌍 Europe / Other"]
 
 def parse_csv(content: bytes) -> list:
@@ -75,7 +97,7 @@ def build_report(rows: list) -> str:
         doc_no   = row.get("Document No.", "").strip()
         project  = row.get("Project", "").strip()
         currency = row.get("Currency", "?").upper().strip()
-        account  = row.get("Account", "?").strip()
+        account  = normalize_account(row.get("Account", "?"))
         amount_s = row.get("Amount", "0").strip()
         status   = row.get("Status", "").strip()
         date     = row.get("Date", "").strip()
@@ -111,7 +133,7 @@ def build_report(rows: list) -> str:
             empty_in_rows.append({
                 "date": date,
                 "doc": doc_no,
-                "partner": partner,
+                "partner": partner or row.get("Narration", "").strip().split(chr(10))[0][:60],
                 "amount": amount,
                 "currency": currency,
                 "account": account,
