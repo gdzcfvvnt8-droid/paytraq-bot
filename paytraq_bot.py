@@ -15,30 +15,34 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 
 BOT_TOKEN = "8649650117:AAHLbzcGjPu-ei-S0tWMksEs-fvUs1wof-c"
 
-# Add Telegram user_ids of allowed users here.
-# To find your ID: message @userinfobot in Telegram.
-ALLOWED_USERS = {563973148,  # Admin
+ALLOWED_USERS = {
+    563973148,  # Admin
 }
 
 # ─── REGION MAPPING ───────────────────────────────────────────────────────────
 
 def get_region(project: str) -> str:
     p = project.strip().upper()
-    if p in ("AM", "ARMENIA"):
+    # Armenia
+    if p in ("AM - ARMENIA", "AM-ARMENIA", "ARMENIA", "AM"):
         return "🇦🇲 Armenia"
-    elif p in ("AZ", "AZERBAIJAN"):
+    # Azerbaijan
+    if p in ("AZ - AZERBAIJAN", "AZ-AZERBAIJAN", "AZERBAIJAN", "AZ"):
         return "🇦🇿 Azerbaijan"
-    elif p in ("UZ", "UZBEKISTAN"):
+    # Uzbekistan
+    if p in ("UZ-UZBEKISTAN", "UZ - UZBEKISTAN", "UZBEKISTAN", "UZ"):
         return "🇺🇿 Uzbekistan"
-    else:
-        return "🌍 Europe / Other"
+    # Empty project — special bucket
+    if p == "":
+        return "__EMPTY__"
+    # Everything else → Europe / Other
+    return "🌍 Europe / Other"
 
 REGION_ORDER = ["🇦🇲 Armenia", "🇦🇿 Azerbaijan", "🇺🇿 Uzbekistan", "🌍 Europe / Other"]
 
 # ─── CSV PARSING ──────────────────────────────────────────────────────────────
 
-def parse_csv(content: bytes) -> list[dict]:
-    """Parse CSV bytes, try tab then comma delimiter."""
+def parse_csv(content: bytes) -> list:
     text = content.decode("utf-8-sig", errors="replace")
     sample = text[:2000]
     delimiter = "\t" if "\t" in sample else ","
@@ -49,7 +53,6 @@ def parse_csv(content: bytes) -> list[dict]:
     return rows
 
 def parse_amount(value: str) -> float:
-    """Convert string like '1 234,56' or '1234.56' to float."""
     v = value.replace(" ", "").replace("\xa0", "").replace(",", ".")
     try:
         return float(v)
@@ -58,75 +61,102 @@ def parse_amount(value: str) -> float:
 
 # ─── REPORT GENERATION ────────────────────────────────────────────────────────
 
-def build_report(rows: list[dict]) -> str:
-    """Build a text report: breakdown by region → currency → account."""
-
+def build_report(rows: list) -> str:
     # Structure: region → currency → account → total
     data = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
-    skipped = 0
-    total_rows = 0
+
+    # Empty project incoming: currency → account → total
+    empty_in = defaultdict(lambda: defaultdict(float))
+    empty_in_count = 0
+
+    # Outgoing stats
+    out_count = 0
+    out_by_currency = defaultdict(float)
+
+    total_in = 0
 
     for row in rows:
-        project  = row.get("Project", "")
+        doc_no   = row.get("Document No.", "")
+        project  = row.get("Project", "").strip()
         currency = row.get("Currency", "?").upper()
         account  = row.get("Account", "?")
         amount_s = row.get("Amount", "0")
         status   = row.get("Status", "").lower()
 
-        # Only process incoming payments (Document No. starts with IN/)
-        doc_no = row.get("Document No.", "")
-        if not doc_no.upper().startswith("IN/"):
-            skipped += 1
-            continue
-
-        # Skip cancelled/void entries
         if status in ("cancelled", "void", "voided"):
-            skipped += 1
             continue
 
         amount = parse_amount(amount_s)
+
+        is_incoming = doc_no.upper().startswith("IN/")
+        is_outgoing = doc_no.upper().startswith("OUT/")
+
+        # Outgoing — just count
+        if is_outgoing:
+            out_count += 1
+            out_by_currency[currency] += amount
+            continue
+
+        if not is_incoming:
+            continue
+
         if amount == 0:
             continue
 
+        total_in += 1
+
         region = get_region(project)
-        data[region][currency][account] += amount
-        total_rows += 1
 
-    if total_rows == 0:
-        return "⚠️ Не найдено ни одной строки с суммой. Проверь формат CSV."
+        if region == "__EMPTY__":
+            empty_in_count += 1
+            empty_in[currency][account] += amount
+        else:
+            data[region][currency][account] += amount
 
-    lines = ["📊 *Сводка по оплатам PayTraq*\n"]
+    if total_in == 0 and empty_in_count == 0:
+        return "⚠️ Не найдено входящих платежей. Проверь формат CSV."
 
-    grand_total_by_currency: dict[str, float] = defaultdict(float)
+    lines = ["📊 *Сводка по входящим оплатам PayTraq*\n"]
+
+    grand_total: dict = defaultdict(float)
 
     for region in REGION_ORDER:
         if region not in data:
             continue
-
         lines.append(f"*{region}*")
-        region_total: dict[str, float] = defaultdict(float)
-
         currencies = sorted(data[region].keys())
         for currency in currencies:
             accounts = data[region][currency]
             cur_total = sum(accounts.values())
-            region_total[currency] += cur_total
-            grand_total_by_currency[currency] += cur_total
-
+            grand_total[currency] += cur_total
             lines.append(f"  💵 *{currency}*: `{cur_total:,.2f}`")
             for account, amt in sorted(accounts.items(), key=lambda x: -x[1]):
                 lines.append(f"    • {account}: `{amt:,.2f}`")
+        lines.append("")
 
-        lines.append("")  # blank line between regions
+    # Empty project block
+    if empty_in_count > 0:
+        lines.append(f"*⚠️ Без проекта ({empty_in_count} платежей)*")
+        for currency in sorted(empty_in.keys()):
+            accounts = empty_in[currency]
+            cur_total = sum(accounts.values())
+            grand_total[currency] += cur_total
+            lines.append(f"  💵 *{currency}*: `{cur_total:,.2f}`")
+            for account, amt in sorted(accounts.items(), key=lambda x: -x[1]):
+                lines.append(f"    • {account}: `{amt:,.2f}`")
+        lines.append("")
 
-    # Grand total
+    # Grand total incoming
     lines.append("─────────────────")
-    lines.append("*💰 Итого по всем регионам:*")
-    for currency, total in sorted(grand_total_by_currency.items()):
+    lines.append("*💰 Итого входящих:*")
+    for currency, total in sorted(grand_total.items()):
         lines.append(f"  {currency}: `{total:,.2f}`")
 
-    if skipped:
-        lines.append(f"\n_ℹ️ Пропущено строк (исходящие OUT/ и отменённые): {skipped}_")
+    # Outgoing summary
+    if out_count > 0:
+        lines.append(f"\n*↗️ Исходящих платежей: {out_count}*")
+        for currency, amt in sorted(out_by_currency.items()):
+            lines.append(f"  {currency}: `{amt:,.2f}`")
 
     return "\n".join(lines)
 
@@ -134,7 +164,7 @@ def build_report(rows: list[dict]) -> str:
 
 def is_allowed(user_id: int) -> bool:
     if not ALLOWED_USERS:
-        return True  # If list is empty — allow everyone (fill it in to restrict)
+        return True
     return user_id in ALLOWED_USERS
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,22 +182,23 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update.effective_user.id):
         return
     await update.message.reply_text(
-        "📎 Просто отправь CSV-файл из PayTraq (раздел Деньги → Оплаты → Экспорт).\n\n"
+        "📎 Просто отправь CSV-файл из PayTraq.\n\n"
         "Бот покажет разбивку:\n"
-        "• 🇦🇲 Armenia (проекты AM / Armenia)\n"
-        "• 🇦🇿 Azerbaijan (проекты AZ / Azerbaijan)\n"
-        "• 🇺🇿 Uzbekistan (проект UZ / Uzbekistan)\n"
-        "• 🌍 Europe / Other (всё остальное)\n\n"
-        "Внутри каждого региона — суммы по валютам и счетам (источникам).",
+        "• 🇦🇲 Armenia\n"
+        "• 🇦🇿 Azerbaijan\n"
+        "• 🇺🇿 Uzbekistan\n"
+        "• 🌍 Europe / Other\n"
+        "• ⚠️ Без проекта (пустые входящие)\n"
+        "• ↗️ Исходящие (только количество)\n\n"
+        "Внутри каждого блока — суммы по валютам и счетам.",
         parse_mode="Markdown"
     )
 
 async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Helper: lets new users find their Telegram ID to add to ALLOWED_USERS."""
     uid = update.effective_user.id
     name = update.effective_user.full_name
     await update.message.reply_text(
-        f"👤 {name}\nТвой Telegram ID: `{uid}`\n\nПередай его администратору бота.",
+        f"👤 {name}\nТвой Telegram ID: `{uid}`",
         parse_mode="Markdown"
     )
 
@@ -194,7 +225,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         report = build_report(rows)
 
-        # Telegram message limit is 4096 chars; split if needed
         if len(report) <= 4096:
             await update.message.reply_text(report, parse_mode="Markdown")
         else:
@@ -218,16 +248,13 @@ def main():
         format="%(asctime)s [%(levelname)s] %(message)s",
         level=logging.INFO
     )
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown))
-
-    logging.info("Bot started. Waiting for messages...")
+    logging.info("Bot started.")
     app.run_polling()
 
 if __name__ == "__main__":
