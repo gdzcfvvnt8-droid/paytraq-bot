@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PayTraq Payment Analyzer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+ 
+  :root {
+    --bg: #F5F3EE;
+    --surface: #FFFFFF;
+    --border: #E0DDD6;
+    --text: #1A1917;
+    --muted: #7A776F;
+    --accent: #1A1917;
+    --am: #FFEAEA;
+    --az: #EAF2FF;
+    --uz: #EAFAF0;
+    --eu: #FFFBEA;
+    --warn: #FFF4DC;
+    --warn-border: #F5C842;
+    --warn-text: #7A5800;
+  }
+ 
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+ 
+  body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 0;
+  }
+ 
+  /* HEADER */
+  .top-bar {
+    background: var(--text);
+    color: #fff;
+    padding: 1rem 2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .top-bar .logo {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    opacity: 0.9;
+  }
+  .top-bar .tagline {
+    font-size: 12px;
+    opacity: 0.5;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+ 
+  .main { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem; }
+ 
+  /* UPLOAD */
+  .upload-zone {
+    border: 1.5px dashed var(--border);
+    border-radius: 12px;
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--surface);
+    margin-bottom: 2rem;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--text); background: #F9F8F4; }
+  .upload-icon { font-size: 40px; margin-bottom: 1rem; }
+  .upload-zone h2 { font-size: 16px; font-weight: 500; margin-bottom: 6px; }
+  .upload-zone p { font-size: 13px; color: var(--muted); }
+  #fileInput { display: none; }
+ 
+  /* METRICS */
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin-bottom: 2rem; }
+  .metric { background: var(--surface); padding: 1.25rem 1rem; }
+  .metric .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; font-family: 'IBM Plex Mono', monospace; }
+  .metric .value { font-size: 24px; font-weight: 500; line-height: 1; }
+  .metric .sub { font-size: 11px; color: var(--muted); margin-top: 4px; font-family: 'IBM Plex Mono', monospace; }
+  .metric.warn .value { color: #c07800; }
+ 
+  /* ACTIONS */
+  .actions { display: flex; gap: 10px; margin-bottom: 2rem; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 18px; border-radius: 8px; font-size: 13px;
+    cursor: pointer; font-family: 'IBM Plex Sans', sans-serif;
+    font-weight: 500; transition: all 0.15s;
+    text-decoration: none;
+  }
+  .btn-primary { background: var(--text); color: #fff; border: none; }
+  .btn-primary:hover { background: #333; }
+  .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .btn-secondary:hover { background: var(--bg); }
+  .btn svg { width: 15px; height: 15px; }
+ 
+  /* REGION CARDS */
+  .section-title {
+    font-size: 11px; font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.08em; color: var(--muted); text-transform: uppercase;
+    margin-bottom: 1rem; margin-top: 2rem;
+  }
+ 
+  .region-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+ 
+  .region-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .region-card-header { padding: 0.75rem 1rem; font-size: 14px; font-weight: 500; display: flex; align-items: center; justify-content: space-between; }
+  .region-card-body { padding: 0 1rem 0.75rem; }
+ 
+  .cur-block { margin-top: 0.5rem; }
+  .cur-label { font-size: 11px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px; }
+  .cur-total { font-size: 20px; font-weight: 500; margin-bottom: 4px; font-family: 'IBM Plex Mono', monospace; }
+  .acc-rows { border-top: 1px solid var(--border); padding-top: 4px; }
+  .acc-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 12px; }
+  .acc-name { color: var(--muted); }
+  .acc-amt { font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+ 
+  /* QUESTIONS */
+  .questions-card {
+    background: var(--warn);
+    border: 1px solid var(--warn-border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 2rem;
+  }
+  .questions-header {
+    padding: 0.875rem 1rem;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--warn-text);
+    border-bottom: 1px solid var(--warn-border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .q-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .q-table th { padding: 6px 1rem; text-align: left; font-size: 10px; font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.05em; text-transform: uppercase; color: var(--warn-text); border-bottom: 1px solid var(--warn-border); }
+  .q-table td { padding: 6px 1rem; border-bottom: 1px solid rgba(245,200,66,0.2); vertical-align: middle; }
+  .q-table tr:last-child td { border-bottom: none; }
+  .q-table .mono { font-family: 'IBM Plex Mono', monospace; }
+  .q-table .muted { color: var(--muted); }
+  .q-totals { padding: 0.75rem 1rem; border-top: 1px solid var(--warn-border); display: flex; gap: 1.5rem; }
+  .q-total-item { font-size: 13px; }
+  .q-total-item .cur { font-size: 11px; color: var(--warn-text); font-family: 'IBM Plex Mono', monospace; }
+  .q-total-item .amt { font-weight: 500; font-family: 'IBM Plex Mono', monospace; font-size: 15px; }
+ 
+  /* GRAND TOTAL */
+  .grand-card {
+    background: var(--text); color: #fff;
+    border-radius: 12px; padding: 1.25rem 1.5rem;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
+    margin-bottom: 2rem;
+  }
+  .grand-label { font-size: 11px; font-family: 'IBM Plex Mono', monospace; letter-spacing: 0.08em; opacity: 0.6; text-transform: uppercase; margin-bottom: 4px; }
+  .grand-totals { display: flex; gap: 2rem; }
+  .grand-item .cur { font-size: 11px; font-family: 'IBM Plex Mono', monospace; opacity: 0.6; }
+  .grand-item .amt { font-size: 26px; font-weight: 500; font-family: 'IBM Plex Mono', monospace; }
+ 
+  /* OUT */
+  .out-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; color: var(--muted); }
+  .out-row span:last-child { font-family: 'IBM Plex Mono', monospace; color: var(--text); }
+ 
+  /* FOOTER */
+  .footer { text-align: center; font-size: 11px; color: var(--muted); font-family: 'IBM Plex Mono', monospace; padding: 2rem 0 3rem; }
+ 
+  #results { display: none; }
+ 
+  .tag { font-size: 11px; font-family: 'IBM Plex Mono', monospace; padding: 2px 7px; border-radius: 4px; }
+  .tag-draft { background: #EEE; color: var(--muted); }
+</style>
+</head>
+<body>
+ 
+<div class="top-bar">
+  <div class="logo">PAYTRAQ // PAYMENT ANALYZER</div>
+  <div class="tagline">CSV → Report</div>
+</div>
+ 
+<div class="main">
+ 
+  <div class="upload-zone" id="dropZone">
+    <div class="upload-icon">📂</div>
+    <h2>Перетащи CSV-файл сюда</h2>
+    <p>или нажми чтобы выбрать файл · Выгрузка из PayTraq → Деньги → Оплаты</p>
+  </div>
+  <input type="file" id="fileInput" accept=".csv">
+ 
+  <div id="results">
+    <div class="metrics" id="metricsGrid"></div>
+ 
+    <div class="actions">
+      <button class="btn btn-primary" id="dlBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Скачать Excel
+      </button>
+      <button class="btn btn-secondary" id="resetBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 101.5-5M3 3v4h4"/></svg>
+        Новый файл
+      </button>
+    </div>
+ 
+    <div class="section-title">Разбивка по регионам</div>
+    <div class="region-grid" id="regionGrid"></div>
+ 
+    <div id="questionsWrap"></div>
+ 
+    <div class="grand-card" id="grandCard"></div>
+ 
+    <div id="outWrap"></div>
+ 
+    <div class="footer">PayTraq Payment Analyzer · данные не покидают браузер</div>
+  </div>
+ 
+</div>
+ 
+<script>
+const REGION_ORDER=['Armenia','Azerbaijan','Uzbekistan','Europe / Other'];
+const REGION_FLAGS={Armenia:'🇦🇲 Armenia',Azerbaijan:'🇦🇿 Azerbaijan',Uzbekistan:'🇺🇿 Uzbekistan','Europe / Other':'🌍 Europe / Other'};
+const REGION_BG={Armenia:'#FFEAEA',Azerbaijan:'#EAF2FF',Uzbekistan:'#EAFAF0','Europe / Other':'#FFFBEA'};
+ 
+function getRegion(p){
+  const u=(p||'').trim().toUpperCase();
+  if(['AM - ARMENIA','AM-ARMENIA','ARMENIA','AM'].includes(u)) return 'Armenia';
+  if(['AZ - AZERBAIJAN','AZ-AZERBAIJAN','AZERBAIJAN','AZ'].includes(u)) return 'Azerbaijan';
+  if(['UZ-UZBEKISTAN','UZ - UZBEKISTAN','UZBEKISTAN','UZ'].includes(u)) return 'Uzbekistan';
+  if(u==='') return '';
+  return 'Europe / Other';
+}
+ 
+function normAccount(a){
+  const l=(a||'').toLowerCase();
+  if(l.includes('revolut')) return l.includes('eur')?'Revolut EUR':l.includes('usd')?'Revolut USD':'Revolut';
+  if(l.includes('stripe')) return l.includes('eur')?'Stripe EUR':l.includes('usd')?'Stripe USD':'Stripe';
+  if(l.includes('paysera')) return 'Paysera';
+  if(l.includes('coop')) return 'Coop Pank';
+  return (a||'').trim();
+}
+ 
+function parseAmt(v){
+  let s=(v||'').replace(/[\s\u00a0]/g,'');
+  if(s.includes(',')&&s.includes('.')) s=s.replace(',','');
+  else if(s.includes(',')){const p=s.split(',');s=p.length===2&&p[1].length<=2?s.replace(',','.'):s.replace(',','');}
+  return Math.abs(parseFloat(s)||0);
+}
+ 
+function fmt(n){return n.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2});}
+ 
+function parseCsv(text){
+  const delim=text.slice(0,2000).includes('\t')?'\t':',';
+  const lines=text.split('\n').filter(l=>l.trim());
+  const headers=lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,''));
+  return lines.slice(1).map(line=>{
+    const vals=[];let cur='',inQ=false;
+    for(let i=0;i<line.length;i++){
+      if(line[i]==='"'){inQ=!inQ;}
+      else if(line[i]===delim&&!inQ){vals.push(cur.trim());cur='';}
+      else cur+=line[i];
+    }
+    vals.push(cur.trim());
+    const obj={};
+    headers.forEach((h,i)=>obj[h]=(vals[i]||'').replace(/^"|"$/g,'').trim());
+    return obj;
+  });
+}
+ 
+let allRows=[], processedData={};
+ 
+function process(rows){
+  const data={};
+  REGION_ORDER.forEach(r=>data[r]={});
+  const emptyRows=[], outRows=[];
+  let skipDraft=0, totalIn=0;
+ 
+  rows.forEach(r=>{
+    const doc=(r['Document No.']||'').trim();
+    const status=(r['Status']||'').trim().toLowerCase();
+    const project=(r['Project']||'').trim();
+    const currency=(r['Currency']||'').trim().toUpperCase();
+    const account=normAccount(r['Account']||'');
+    const amount=parseAmt(r['Amount']||'0');
+    const narration=(r['Narration']||'').split('\n')[0].slice(0,60);
+    const partner=(r['Business partner']||'').trim()||narration;
+    const date=r['Date']||'';
+ 
+    if(status==='draft'){skipDraft++;return;}
+    if(doc.toUpperCase().startsWith('OUT/')){
+      if(amount>0) outRows.push({doc,currency,amount,account,date,partner});
+      return;
+    }
+    if(!doc.toUpperCase().startsWith('IN/')||amount===0) return;
+    totalIn++;
+    const region=getRegion(project);
+    if(region===''){emptyRows.push({doc,currency,amount,account,date,partner});return;}
+    if(!data[region][currency]) data[region][currency]={};
+    data[region][currency][account]=(data[region][currency][account]||0)+amount;
+  });
+ 
+  return {data,emptyRows,outRows,skipDraft,totalIn};
+}
+ 
+function buildUI(result){
+  const {data,emptyRows,outRows,skipDraft,totalIn}=result;
+  const grandT={};
+ 
+  REGION_ORDER.forEach(reg=>{
+    Object.entries(data[reg]).forEach(([cur,accs])=>{
+      Object.values(accs).forEach(a=>{grandT[cur]=(grandT[cur]||0)+a;});
+    });
+  });
+  emptyRows.forEach(r=>{grandT[r.currency]=(grandT[r.currency]||0)+r.amount;});
+ 
+  // Metrics
+  const eur=grandT['EUR']||0, usd=grandT['USD']||0;
+  let metricsHtml=`
+    <div class="metric"><div class="label">Входящих</div><div class="value">${totalIn+emptyRows.length}</div><div class="sub">платежей</div></div>
+    <div class="metric"><div class="label">EUR</div><div class="value">${fmt(eur)}</div><div class="sub">итого</div></div>
+    <div class="metric"><div class="label">USD</div><div class="value">${fmt(usd)}</div><div class="sub">итого</div></div>
+    <div class="metric warn"><div class="label">Без проекта</div><div class="value">${emptyRows.length}</div><div class="sub">платежей</div></div>`;
+  if(skipDraft) metricsHtml+=`<div class="metric"><div class="label">Draft</div><div class="value" style="color:var(--muted)">${skipDraft}</div><div class="sub">пропущено</div></div>`;
+  document.getElementById('metricsGrid').innerHTML=metricsHtml;
+ 
+  // Regions
+  let regHtml='';
+  REGION_ORDER.forEach(region=>{
+    if(!Object.keys(data[region]).length) return;
+    let body='';
+    Object.keys(data[region]).sort().forEach(cur=>{
+      const accs=data[region][cur];
+      const total=Object.values(accs).reduce((a,b)=>a+b,0);
+      let accRows='';
+      Object.entries(accs).sort((a,b)=>b[1]-a[1]).forEach(([acc,amt])=>{
+        accRows+=`<div class="acc-row"><span class="acc-name">${acc}</span><span class="acc-amt">${fmt(amt)}</span></div>`;
+      });
+      body+=`<div class="cur-block">
+        <div class="cur-label">${cur}</div>
+        <div class="cur-total">${fmt(total)}</div>
+        <div class="acc-rows">${accRows}</div>
+      </div>`;
+    });
+    regHtml+=`<div class="region-card">
+      <div class="region-card-header" style="background:${REGION_BG[region]}">${REGION_FLAGS[region]}</div>
+      <div class="region-card-body">${body}</div>
+    </div>`;
+  });
+  document.getElementById('regionGrid').innerHTML=regHtml;
+ 
+  // Questions
+  if(emptyRows.length){
+    const qT={};
+    emptyRows.forEach(r=>{qT[r.currency]=(qT[r.currency]||0)+r.amount;});
+    const sorted=emptyRows.sort((a,b)=>a.date>b.date?-1:1);
+    let qRows=sorted.slice(0,30).map(r=>`
+      <tr>
+        <td class="mono">${r.date}</td>
+        <td class="mono">${r.doc}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.partner||'—'}</td>
+        <td class="mono">${r.account}</td>
+        <td class="mono" style="text-align:right">${fmt(r.amount)} <span class="muted">${r.currency}</span></td>
+      </tr>`).join('');
+    if(sorted.length>30) qRows+=`<tr><td colspan="5" style="padding:8px 1rem;color:var(--warn-text);font-size:12px">...и ещё ${sorted.length-30} платежей</td></tr>`;
+    const totals=Object.entries(qT).sort().map(([c,a])=>`<div class="q-total-item"><div class="cur">${c}</div><div class="amt">${fmt(a)}</div></div>`).join('');
+    document.getElementById('questionsWrap').innerHTML=`
+      <div class="section-title">Входящие без проекта</div>
+      <div class="questions-card">
+        <div class="questions-header"><span>⚠️ ${emptyRows.length} платежей требуют разбора</span></div>
+        <table class="q-table">
+          <thead><tr><th>Дата</th><th>Документ</th><th>Контрагент / Описание</th><th>Счёт</th><th style="text-align:right">Сумма</th></tr></thead>
+          <tbody>${qRows}</tbody>
+        </table>
+        <div class="q-totals">${totals}</div>
+      </div>`;
+  }
+ 
+  // Grand total
+  const grandItems=Object.entries(grandT).sort().map(([cur,total])=>`
+    <div class="grand-item"><div class="cur">${cur}</div><div class="amt">${fmt(total)}</div></div>`).join('');
+  document.getElementById('grandCard').innerHTML=`
+    <div><div class="grand-label">Итого входящих</div></div>
+    <div class="grand-totals">${grandItems}</div>`;
+ 
+  // Outgoing
+  if(outRows.length){
+    const outT={};
+    outRows.forEach(r=>{outT[r.currency]=(outT[r.currency]||0)+r.amount;});
+    let outHtml=`<div class="section-title">Исходящие (${outRows.length} платежей)</div><div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1rem 1.25rem;margin-bottom:2rem">`;
+    Object.entries(outT).sort().forEach(([c,a])=>{outHtml+=`<div class="out-row"><span>${c}</span><span>${fmt(a)}</span></div>`;});
+    outHtml+='</div>';
+    document.getElementById('outWrap').innerHTML=outHtml;
+  }
+ 
+  document.getElementById('results').style.display='block';
+}
+ 
+function buildExcel(rows, result){
+  const {data,emptyRows}=result;
+  const wb=XLSX.utils.book_new();
+ 
+  // Sheet 1: Data
+  const dataRows=[['Date','Document No.','Region','Business Partner','Account','Currency','Amount','Project','Status']];
+  const regionSort={Armenia:0,Azerbaijan:1,Uzbekistan:2,'Europe / Other':3};
+  rows.filter(r=>{
+    const doc=(r['Document No.']||'').toUpperCase();
+    return doc.startsWith('IN/')&&(r['Status']||'').toLowerCase()!=='draft'&&parseAmt(r['Amount']||'0')>0&&getRegion(r['Project']||'')!=='';
+  }).sort((a,b)=>(regionSort[getRegion(a['Project'])]||99)-(regionSort[getRegion(b['Project'])]||99))
+  .forEach(r=>{
+    const narr=(r['Narration']||'').split('\n')[0].slice(0,60);
+    dataRows.push([r['Date']||'',r['Document No.']||'',getRegion(r['Project']||''),
+      (r['Business partner']||'').trim()||narr,normAccount(r['Account']||''),
+      (r['Currency']||'').toUpperCase(),parseAmt(r['Amount']||'0'),r['Project']||'',r['Status']||'']);
+  });
+  const ws1=XLSX.utils.aoa_to_sheet(dataRows);
+  ws1['!cols']=[{wch:12},{wch:18},{wch:18},{wch:30},{wch:16},{wch:10},{wch:14},{wch:22},{wch:10}];
+  XLSX.utils.book_append_sheet(wb,ws1,'Data');
+ 
+  // Sheet 2: Summary
+  const sumRows=[['Region','Currency','Source','Amount']];
+  const grandT={};
+  REGION_ORDER.forEach(region=>{
+    if(!Object.keys(data[region]).length) return;
+    Object.keys(data[region]).sort().forEach(cur=>{
+      const accs=data[region][cur];
+      const total=Object.values(accs).reduce((a,b)=>a+b,0);
+      grandT[cur]=(grandT[cur]||0)+total;
+      sumRows.push([region,cur,'TOTAL',total]);
+      Object.entries(accs).sort((a,b)=>b[1]-a[1]).forEach(([acc,amt])=>sumRows.push(['','',acc,amt]));
+    });
+    sumRows.push([]);
+  });
+  sumRows.push(['GRAND TOTAL','','','']);
+  Object.entries(grandT).sort().forEach(([cur,total])=>sumRows.push(['',cur,'',total]));
+  const ws2=XLSX.utils.aoa_to_sheet(sumRows);
+  ws2['!cols']=[{wch:22},{wch:12},{wch:22},{wch:16}];
+  XLSX.utils.book_append_sheet(wb,ws2,'Summary');
+ 
+  // Sheet 3: Questions
+  const qRows=[['Date','Document No.','Account','Currency','Amount','Partner / Narration']];
+  emptyRows.sort((a,b)=>a.date>b.date?-1:1).forEach(r=>qRows.push([r.date,r.doc,r.account,r.currency,r.amount,r.partner]));
+  if(emptyRows.length){
+    qRows.push([]);
+    const qT={};
+    emptyRows.forEach(r=>{qT[r.currency]=(qT[r.currency]||0)+r.amount;});
+    qRows.push(['ИТОГО без проекта:']);
+    Object.entries(qT).sort().forEach(([c,a])=>qRows.push(['',c,'','',a,'']));
+  }
+  const ws3=XLSX.utils.aoa_to_sheet(qRows);
+  ws3['!cols']=[{wch:12},{wch:18},{wch:16},{wch:10},{wch:14},{wch:50}];
+  XLSX.utils.book_append_sheet(wb,ws3,'Questions');
+ 
+  const today=new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb,`paytraq_${today}.xlsx`);
+}
+ 
+// Events
+const dz=document.getElementById('dropZone');
+dz.addEventListener('click',()=>document.getElementById('fileInput').click());
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('drag'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag');if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);});
+document.getElementById('fileInput').addEventListener('change',e=>{if(e.target.files[0]) handleFile(e.target.files[0]);});
+document.getElementById('dlBtn').addEventListener('click',()=>{if(allRows.length) buildExcel(allRows,processedData);});
+document.getElementById('resetBtn').addEventListener('click',()=>{
+  document.getElementById('results').style.display='none';
+  document.getElementById('fileInput').value='';
+  allRows=[];processedData={};
+});
+ 
+function handleFile(file){
+  const reader=new FileReader();
+  reader.onload=e=>{
+    allRows=parseCsv(e.target.result);
+    processedData=process(allRows);
+    buildUI(processedData);
+  };
+  reader.readAsText(file,'UTF-8');
+}
+</script>
+</body>
+</html>
